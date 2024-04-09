@@ -1,35 +1,46 @@
-# Implement the server
 from flask import Flask, request, jsonify
-from cos_functions import create_request, policy_variables
-from functools import wraps
-import traceback
+import my_functions
+import inspect
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 
 app = Flask(__name__)
 
-# Define the decorator
-def validate_policy(policy_variables_class):
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            policy_variables_dict = request.get_json()
-            try:
-                # Try to cast the dict to the policy_variables object
-                policy_variables = policy_variables_class(**policy_variables_dict)
-            except Exception as e:
-                return jsonify(success=False, error=str(e)), 400
-            return f(policy_variables, *args, **kwargs)
-        return decorated_function
-    return decorator
+# Setup the Flask-JWT-Extended extension
+app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'  # Change this to a random secret key!
+jwt = JWTManager(app)
 
-# Use the decorator
-@app.route('/create_request', methods=['POST'])
-@validate_policy(policy_variables)  # Replace with your actual policy_variables class
-def create_request_route(policy_variables):
-    try:
-        create_request(policy_variables)
-        return jsonify(success=True), 200
-    except Exception as e:
-        return jsonify(success=False, error=str(e)), 500
+@app.route('/login', methods=['POST'])
+def login():
+    # This is a simple example of auth; you'd likely check a username and password instead
+    username = request.json.get('username', None)
+    if username != 'admin':
+        return jsonify({"error": "Bad username or password"}), 401
+
+    # Identity can be any data that is json serializable; here it's just a username
+    access_token = create_access_token(identity=username)
+    return jsonify(access_token=access_token)
+
+@app.route('/api/<function_name>', methods=['POST'])
+@jwt_required()  # Protects this route with JWTs
+def api(function_name):
+    current_user = get_jwt_identity()  # Get the identity of the JWT owner, if needed
+    data = request.json
+    args = data.get('args', {})
+
+    func = getattr(my_functions, function_name, None)
+
+    if func and callable(func):
+        sig = inspect.signature(func)
+        required_args = [name for name, param in sig.parameters.items() if param.default == inspect.Parameter.empty and param.kind in [inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY]]
+
+        missing_args = [arg for arg in required_args if arg not in args]
+        if missing_args:
+            return jsonify({"error": "Missing required arguments", "missing_args": missing_args}), 400
+
+        result = func(**args)
+        return jsonify({"result": result})
+    else:
+        return jsonify({"error": "Function not found"}), 404
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(debug=True)
